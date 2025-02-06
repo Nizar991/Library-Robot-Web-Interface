@@ -1,1 +1,1 @@
-add your chatGPT API Key in the .env file
+add your ChatGPT API Key in the .env file
