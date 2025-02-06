@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Library Book Search</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha512-r22gChDnGvBylk90+2e/ycr3RVrDi8DIOkIGNhJlKfuyQM4tIRAI062MaV8sfjQKYVGjOBaZBOA87z+IhZE9DA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fuse.js@6.4.6"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pocketsphinx/5.0.0/pocketsphinx.min.js"></script>
+  <style>
+    #error-message {
+      transition: opacity 0.5s ease-out;
+    }
+    .shrink-line {
+      animation: shrink 2.5s forwards;
+    }
+    @keyframes shrink {
+      from { width: 100%; }
+      to { width: 0%; }
+    }
+  </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans">
+  <div class="container mx-auto py-10">
+    <h1 class="text-4xl font-bold text-center mb-8">Library Book Search</h1>
+
+    <div class="flex justify-center mb-6">
+      <input type="text" id="search-input" placeholder="Search by book title..." class="border border-gray-300 p-2 rounded-lg w-1/2" />
+      <button id="search-btn" class="bg-blue-500 text-white px-4 py-2 rounded-lg ml-2 hover:bg-blue-600">Search</button>
+      <button id="refresh-btn" class="bg-green-500 text-white px-4 py-2 rounded-lg ml-2 hover:bg-green-600">Refresh</button>
+      <button id="suggest-btn" class="bg-indigo-500 text-white px-4 py-2 rounded-lg ml-2 hover:bg-indigo-600">Suggest Books</button>
+      <button id="voice-btn" class="bg-yellow-500 text-white px-4 py-2 rounded-lg ml-2 hover:bg-yellow-600">Search with Voice</button>
+      <button id="chatbot-btn" onclick="window.location.href='chatbot.html'" class="bg-purple-500 text-white px-4 py-2 rounded-lg ml-2 hover:bg-purple-600">Chatbot</button>
+    </div>
+
+    <div class="flex justify-center">
+      <div class="table bg-white shadow-md rounded-lg overflow-hidden"></div>
+    </div>
+
+    <div class="popup fixed inset-0 flex justify-center items-center bg-black bg-opacity-50" id="book-popup" style="display: none;">
+      <div class="bg-white p-6 rounded-lg w-1/3">
+        <h3 id="popup-title" class="text-xl font-bold mb-4">Book Title</h3>
+        <p><strong>Author:</strong> <span id="popup-author"></span></p>
+        <p><strong>Call Number:</strong> <span id="popup-callnumber"></span></p>
+        <p><strong>Location:</strong> <span id="popup-location"></span></p>
+        <p><strong>Edition:</strong> <span id="popup-edition"></span></p>
+        <button class="bg-blue-500 text-white px-4 py-2 rounded-lg mt-4 hover:bg-blue-600" onclick="readAloud()">Read Aloud for Me</button>
+        <button class="close-btn bg-red-500 text-white px-4 py-2 rounded-lg mt-4 hover:bg-red-600" id="close-popup">Close</button>
+      </div>
+    </div>
+
+    <!-- The static error message container is commented out so that our dynamic error messages (below) appear only when needed -->
+    <!--
+    <div id="error-message" class="fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded shadow-lg">
+      <p class="text-sm">I didn't understand. Please repeat.</p>
+      <div class="w-full h-1 bg-white mt-1 overflow-hidden">
+        <div class="h-full bg-red-700 shrink-line"></div>
+      </div>
+    </div>
+    -->
+  </div>
+
+  <script>
+    // Global variables and element references
+    let tableDiv = document.querySelector(".table");
+    let popup = document.getElementById("book-popup");
+    let searchInput = document.getElementById("search-input");
+    // let voiceStatus = document.getElementById("voice-status"); // (not used now)
+    let popupTitle = document.getElementById("popup-title");
+    let popupAuthor = document.getElementById("popup-author");
+    let popupCallNumber = document.getElementById("popup-callnumber");
+    let popupLocation = document.getElementById("popup-location");
+    let popupEdition = document.getElementById("popup-edition");
+
+    document.getElementById("search-btn").addEventListener("click", searchBooks);
+    document.getElementById("refresh-btn").addEventListener("click", refreshPage);
+    document.getElementById("suggest-btn").addEventListener("click", suggestBooks);
+    document.getElementById("close-popup").addEventListener("click", () => {
+      window.speechSynthesis.cancel();
+      popup.style.display = "none";
+    });
+
+    searchInput.addEventListener("keydown", function(event) {
+      if (event.key === "Enter") {
+        searchBooks();
+      }
+    });
+
+    let sheetData = [];
+    let fuse;
+
+    // Voice search event listener remains attached to the voice button.
+    document.getElementById("voice-btn").addEventListener("click", toggleVoiceSearch);
+
+    // Load the Excel data and create the Fuse index.
+    (async () => {
+      let response = await fetch("./Library Data Sheet.xlsx");
+      let arrayBuffer = await response.arrayBuffer();
+      let workbook = XLSX.read(arrayBuffer, { type: 'array' });
+      let firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      sheetData = XLSX.utils.sheet_to_json(firstSheet);
+
+      fuse = new Fuse(sheetData, {
+        keys: ['Title'],
+        threshold: 0.3,
+      });
+    })();
+
+    function searchBooks() {
+      let query = searchInput.value.toLowerCase();
+      let results = fuse.search(query);
+
+      if (results.length > 0) {
+        let relevantBooks = results.map(result => result.item);
+        displayTable(relevantBooks);
+      } else {
+        tableDiv.innerHTML = "<p class='text-center text-red-500'>No matching books found.</p>";
+      }
+    }
+
+    function displayTable(books) {
+      let html = "<table class='table-auto w-full bg-white shadow-lg rounded-lg'><thead><tr class='bg-gray-200 text-left'><th class='p-4'>Title</th><th class='p-4'>Author</th><th class='p-4'>Call Number</th><th class='p-4'>Location</th><th class='p-4'>Edition</th></tr></thead><tbody>";
+
+      books.forEach(row => {
+        let title = row.Title ? row.Title.replace(/\s*\/\s*$/, '') : ""; // Removes trailing ' /'
+        html += `<tr class="clickable hover:bg-gray-100 cursor-pointer" onclick="showPopup('${title}', '${row.Author}', '${row.CallNumber}', '${row.Location}', '${row.Edition}')">
+                  <td class='p-4'>${title}</td>
+                  <td class='p-4'>${row.Author || ""}</td>
+                  <td class='p-4'>${row.CallNumber || ""}</td>
+                  <td class='p-4'>${row.Location || ""}</td>
+                  <td class='p-4'>${row.Edition || ""}</td>
+                 </tr>`;
+      });
+
+      html += "</tbody></table>";
+      tableDiv.innerHTML = html;
+    }
+
+    function showPopup(title, author, callnumber, location, edition) {
+      popupTitle.textContent = title;
+      popupAuthor.textContent = author;
+      popupCallNumber.textContent = callnumber;
+      popupLocation.textContent = location;
+      popupEdition.textContent = edition;
+      popup.style.display = "flex";
+    }
+
+    function readAloud() {
+      const titleText = popupTitle.textContent || "Not provided";
+      const authorText = popupAuthor.textContent || "Not provided";
+      const callNumberText = popupCallNumber.textContent || "Not provided";
+      const locationText = popupLocation.textContent || "Not provided";
+      const editionText = popupEdition.textContent || "Not provided";
+
+      const textToRead = [
+        `Title: ${titleText}`,
+        `Author: ${authorText}`,
+        `Call Number: ${callNumberText}`,
+        `Location: ${locationText}`,
+        `Edition: ${editionText}`
+      ];
+
+      textToRead.forEach(line => {
+        let utterance = new SpeechSynthesisUtterance(line);
+        window.speechSynthesis.speak(utterance);
+      });
+    }
+
+    function refreshPage() {
+      searchInput.value = "";
+      tableDiv.innerHTML = "";
+    }
+
+    function suggestBooks() {
+      const randomBooks = getRandomBooks(5);
+      localStorage.setItem('suggestedBooks', JSON.stringify(randomBooks));
+      window.location.href = 'suggested_books.html';
+    }
+
+    function getRandomBooks(num) {
+      const shuffled = sheetData.sort(() => 0.5 - Math.random());
+      return shuffled.slice(0, num);
+    }
+
+    // ---------------------------
+    // The original (commented-out) CMU Sphinx voice search functionality:
+    // ---------------------------
+    // let recognition;
+    // let isVoiceSearchEnabled = false;
+    //
+    // function toggleVoiceSearch() {
+    //     console.log("Voice search toggle clicked");
+    //
+    //     if (!('webkitSpeechRecognition' in window)) {
+    //         alert("Sorry, your browser doesn't support speech recognition.");
+    //         return;
+    //     }
+    //
+    //     if (!recognition) {
+    //         recognition = new webkitSpeechRecognition();
+    //         recognition.continuous = true; // Keep listening until stopped
+    //         recognition.interimResults = true;
+    //         recognition.lang = "en-US";
+    //
+    //         recognition.onresult = function(event) {
+    //             const transcript = event.results[0][0].transcript;
+    //             console.log("Recognized Speech:", transcript);
+    //
+    //             searchInput.value = transcript; // Set the recognized text into the search input
+    //             searchBooks(); // Trigger search immediately for matching books
+    //         };
+    //
+    //         recognition.onerror = function(event) {
+    //             // Do nothing on error, no voice status display needed now
+    //             console.log("Speech recognition error:", event.error);
+    //         };
+    //     }
+    //
+    //     if (isVoiceSearchEnabled) {
+    //         recognition.stop();
+    //         document.getElementById("voice-btn").textContent = "Search with Voice";
+    //         console.log("Voice search disabled");
+    //     } else {
+    //         recognition.start();
+    //         document.getElementById("voice-btn").textContent = "Disable Voice Search";
+    //         console.log("Voice search started");
+    //     }
+    //
+    //     isVoiceSearchEnabled = !isVoiceSearchEnabled;
+    // }
+    // ---------------------------
+    // Our new voice search functionality with error handling
+    // ---------------------------
+    
+    let recognition; 
+    let isVoiceSearchEnabled = false;
+    // Define a list of filler words to ignore.
+    const fillerWords = ["um", "uh", "er", "ah"];
+
+    function toggleVoiceSearch() {
+      console.log("Voice search toggle clicked");
+      
+      if (!('webkitSpeechRecognition' in window)) {
+        alert("Sorry, your browser doesn't support speech recognition.");
+        return;
+      }
+      
+      if (!recognition) {
+        recognition = new webkitSpeechRecognition();
+        recognition.continuous = true; // Keep listening until stopped
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
+
+        recognition.onresult = function(event) {
+          // Loop over all results (starting from event.resultIndex)
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              let transcript = event.results[i][0].transcript.trim();
+              let confidence = event.results[i][0].confidence;
+              
+              // Conditions for not understanding:
+              // 1. Empty transcript.
+              // 2. Low confidence (below 0.5).
+              // 3. Transcript consists solely of filler words.
+              if (!transcript) {
+                showError("I didn't understand. Please repeat.");
+                return;
+              }
+              if (confidence < 0.5) {
+                console.log("Low confidence:", confidence);
+                showError("I didn't understand. Please repeat.");
+                return;
+              }
+              const words = transcript.toLowerCase().split(/\s+/);
+              const isOnlyFiller = words.every(word => fillerWords.includes(word));
+              if (isOnlyFiller) {
+                showError("I didn't understand. Please repeat.");
+                return;
+              }
+              console.log("Recognized Speech:", transcript);
+              searchInput.value = transcript;
+              searchBooks();
+            }
+          }
+        };
+
+        recognition.onerror = function(event) {
+          console.log("Speech recognition error:", event.error);
+          if (event.error === "no-speech") {
+            showError("No speech detected. Please try again.");
+          } else if (event.error === "not-allowed") {
+            showError("Microphone access denied. Please allow access and try again.");
+          } else {
+            showError("An error occurred. Please try again.");
+          }
+        };
+      }
+
+      if (isVoiceSearchEnabled) {
+        recognition.stop();
+        document.getElementById("voice-btn").textContent = "Search with Voice";
+        console.log("Voice search disabled");
+      } else {
+        recognition.start();
+        document.getElementById("voice-btn").textContent = "Disable Voice Search";
+        console.log("Voice search started");
+      }
+      isVoiceSearchEnabled = !isVoiceSearchEnabled;
+    }
+
+    // Function to display error messages with a shrinking animation.
+    // This error will only be displayed during voice search when proper speech isn’t detected.
+    function showError(message) {
+      // Remove any existing error message (to avoid duplicates)
+      const existingError = document.getElementById("error-message");
+      if (existingError) {
+        existingError.remove();
+      }
+      
+      // Create the error message container
+      const errorMessage = document.createElement("div");
+      errorMessage.id = "error-message";
+      errorMessage.className = "fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded shadow-lg z-50";
+      
+      // Insert the message text and the shrinking line
+      errorMessage.innerHTML = `
+        <p class="text-sm">${message}</p>
+        <div class="w-full h-1 bg-white mt-1 overflow-hidden">
+          <div class="h-full bg-red-700 shrink-line"></div>
+        </div>
+      `;
+      
+      document.body.appendChild(errorMessage);
+      
+      // Fade out and remove the message after 2.5 seconds
+      setTimeout(() => {
+        errorMessage.style.opacity = "0";
+        setTimeout(() => {
+          errorMessage.remove();
+        }, 500);
+      }, 2500);
+    }
+  </script>
+</body>
+</html>
